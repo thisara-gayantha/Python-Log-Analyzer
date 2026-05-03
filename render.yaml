@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: Python-Log-Analyzer
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -k eventlet -w 1 --bind 0.0.0.0:$PORT app:app
+    # Set the repository subfolder that contains the app
+    root: log-analyser
+    envVars:
+      - key: PORT
+        value: "10000"
