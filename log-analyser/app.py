@@ -43,8 +43,15 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload limit
 
 # SocketIO init.
-# Use threading mode for Windows/dev stability to avoid eventlet-related hangs.
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+# Prefer eventlet when available (production) but fall back to threading for
+# local/dev environments where eventlet may not be installed or desirable.
+try:
+    import eventlet  # type: ignore
+    _async_mode = "eventlet"
+except Exception:
+    _async_mode = "threading"
+
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode=_async_mode)
 
 # In-memory store for last computed counts (simple, acceptable for a small app)
 app.config["LAST_COUNTS"] = {"ERROR": 0, "WARNING": 0, "INFO": 0}
@@ -258,6 +265,8 @@ def handle_stop_monitor(_data):
 
 
 if __name__ == "__main__":
-    # Use socketio.run for proper Socket.IO support with eventlet/gevent
-    # Disable the auto-reloader to avoid interrupting long requests (PDF generation)
-    socketio.run(app, debug=False, host="0.0.0.0", port=5000)
+    # Use socketio.run for proper Socket.IO support when running the
+    # application directly. For production deployments on Render use
+    # Gunicorn with the eventlet worker (see README / Render settings).
+    port = int(os.environ.get("PORT", "10000"))
+    socketio.run(app, debug=False, host="0.0.0.0", port=port)
