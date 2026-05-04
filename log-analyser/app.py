@@ -38,6 +38,27 @@ def allowed_filename(filename: str) -> bool:
     return False
 
 
+def _resolve_uploaded_file_path(filename: str):
+    if not filename:
+        return None
+
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        return None
+
+    upload_root = os.path.realpath(app.config["UPLOAD_FOLDER"])
+    file_path = os.path.realpath(os.path.join(upload_root, safe_name))
+    try:
+        if os.path.commonpath([file_path, upload_root]) != upload_root:
+            return None
+    except Exception:
+        return None
+
+    if not os.path.exists(file_path):
+        return None
+    return file_path
+
+
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload limit
@@ -191,6 +212,112 @@ def upload():
     }), 200
 
 
+@app.route("/uploaded-file", methods=["GET", "POST"])
+def uploaded_file():
+    """Read or update a server-side uploaded copy stored in temporary space."""
+    payload = request.get_json(silent=True) or request.form or request.args
+    filename = payload.get("filename")
+    file_path = _resolve_uploaded_file_path(filename)
+    if not file_path:
+        return jsonify({"error": "file_not_found"}), 404
+
+    if request.method == "GET":
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read()
+            return jsonify({"filename": os.path.basename(file_path), "content": content}), 200
+        except Exception as exc:
+            return jsonify({"error": f"Failed to read uploaded copy: {exc}"}), 500
+
+    content = payload.get("content", "")
+    try:
+        with open(file_path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+
+        text_lines = content.splitlines()
+        counts = count_levels(text_lines)
+        security_tracker = SecurityTracker()
+        for line in text_lines:
+            security_tracker.ingest(line)
+
+        security_report = security_tracker.snapshot()
+        app.config["LAST_COUNTS"] = counts
+        app.config["LAST_SECURITY"] = security_report
+        _persist_last_state(counts, security_report)
+        socketio.emit("update_counts", {"counts": counts})
+        socketio.emit("security_update", security_report)
+        for alert in security_report.get("alerts", []):
+            socketio.emit("security_alert", alert)
+
+        labels, data = chart_data_from_counts(counts)
+        threat_labels, threat_data = threat_chart_data_from_report(security_report)
+        return jsonify({
+            "filename": os.path.basename(file_path),
+            "content": content,
+            "counts": counts,
+            "labels": labels,
+            "data": data,
+            "threat_labels": threat_labels,
+            "threat_data": threat_data,
+            "security": security_report,
+            "preview_lines": text_lines[:50],
+        }), 200
+    except Exception as exc:
+        return jsonify({"error": f"Failed to save uploaded copy: {exc}"}), 500
+
+
+@app.route("/append-line", methods=["POST"])
+def append_line():
+    """Append one new line to a server-side uploaded copy and refresh analysis."""
+    payload = request.get_json(silent=True) or {}
+    filename = payload.get("filename")
+    line = str(payload.get("line", "")).rstrip("\r\n")
+
+    if not line.strip():
+        return jsonify({"error": "line_required"}), 400
+
+    file_path = _resolve_uploaded_file_path(filename)
+    if not file_path:
+        return jsonify({"error": "file_not_found"}), 404
+
+    try:
+        with open(file_path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+            text_lines = fh.read().splitlines()
+
+        counts = count_levels(text_lines)
+        security_tracker = SecurityTracker()
+        for current_line in text_lines:
+            security_tracker.ingest(current_line)
+
+        security_report = security_tracker.snapshot()
+        app.config["LAST_COUNTS"] = counts
+        app.config["LAST_SECURITY"] = security_report
+        _persist_last_state(counts, security_report)
+        socketio.emit("update_counts", {"counts": counts})
+        socketio.emit("security_update", security_report)
+        for alert in security_report.get("alerts", []):
+            socketio.emit("security_alert", alert)
+
+        labels, data = chart_data_from_counts(counts)
+        threat_labels, threat_data = threat_chart_data_from_report(security_report)
+        return jsonify({
+            "filename": os.path.basename(file_path),
+            "line": line,
+            "counts": counts,
+            "labels": labels,
+            "data": data,
+            "threat_labels": threat_labels,
+            "threat_data": threat_data,
+            "security": security_report,
+            "preview_lines": text_lines[-50:],
+        }), 200
+    except Exception as exc:
+        return jsonify({"error": f"Failed to append line: {exc}"}), 500
+
+
 @app.route("/report", methods=["GET"])
 def report():
     """Return a PDF report based on the last computed counts."""
@@ -230,8 +357,8 @@ def handle_monitor_request(data):
     if not filename:
         return
 
-    file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    if not os.path.exists(file_path):
+    file_path = _resolve_uploaded_file_path(filename)
+    if not file_path:
         socketio.emit("monitor_error", {"error": "file_not_found"})
         return
 

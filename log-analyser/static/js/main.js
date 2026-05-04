@@ -222,13 +222,25 @@ socket.on('new_log', (payload) => {
   trimStreamBuffer();
 });
 
+socket.on('monitor_error', (payload) => {
+  setMonitorStatus(`Monitoring error: ${payload && payload.error ? payload.error : 'unknown'}`, true);
+});
+
 // Upload form handling
 const uploadForm = document.getElementById('upload-form');
 const uploadBtn = document.getElementById('upload-btn');
 const reportBtn = document.getElementById('download-report');
 const monitorBtn = document.getElementById('monitor-btn');
+const appendLineBtn = document.getElementById('append-line-btn');
 const monitorStatus = document.getElementById('monitor-status');
 const alerts = document.getElementById('alerts');
+const appendLinePanel = document.getElementById('append-line-panel');
+const appendLineInput = document.getElementById('append-line-input');
+const appendLineFilename = document.getElementById('append-line-filename');
+const appendLineStatus = document.getElementById('append-line-status');
+const saveLineBtn = document.getElementById('save-line-btn');
+const previewLineBtn = document.getElementById('preview-line-btn');
+const closeAppendPanelBtn = document.getElementById('close-append-panel-btn');
 let lastUploadedFile = null;
 let monitoringStarted = false;
 
@@ -237,6 +249,36 @@ function setMonitorStatus(message, isError = false) {
   monitorStatus.textContent = message;
   monitorStatus.classList.toggle('text-danger', isError);
   monitorStatus.classList.toggle('text-muted', !isError);
+}
+
+function setAppendLineStatus(message, isError = false) {
+  if (!appendLineStatus) return;
+  appendLineStatus.textContent = message;
+  appendLineStatus.classList.toggle('text-danger', isError);
+  appendLineStatus.classList.toggle('text-muted', !isError);
+}
+
+function showAppendLinePanel(show) {
+  if (!appendLinePanel) return;
+  appendLinePanel.classList.toggle('d-none', !show);
+}
+
+function openAppendLinePanel() {
+  if (!lastUploadedFile) {
+    setAppendLineStatus('Upload a file first, then add a new line.', true);
+    return;
+  }
+  if (appendLineFilename) {
+    appendLineFilename.textContent = `Appending to: ${lastUploadedFile}`;
+  }
+
+  showAppendLinePanel(true);
+  if (appendLinePanel && typeof appendLinePanel.scrollIntoView === 'function') {
+    appendLinePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  if (appendLineInput && typeof appendLineInput.focus === 'function') {
+    appendLineInput.focus();
+  }
 }
 
 function startMonitoring(filename) {
@@ -259,8 +301,92 @@ function startMonitoring(filename) {
   setMonitorStatus(`Live monitoring started for ${filename}.`);
 }
 
+async function appendNewLine() {
+  if (!lastUploadedFile) {
+    setAppendLineStatus('Upload a file first, then add a new line.', true);
+    return;
+  }
+
+  const line = appendLineInput ? appendLineInput.value.trim() : '';
+  if (!line) {
+    setAppendLineStatus('Type a log line before appending it.', true);
+    return;
+  }
+
+  setAppendLineStatus('Appending new line...');
+
+  try {
+    const res = await fetch('/append-line', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: lastUploadedFile, line })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to append line');
+    }
+
+    if (data.counts) updateChart(data.counts);
+    if (data.security) {
+      setThreatBadge(data.security.threat_level || 'Normal');
+      updateThreatChart(data.security.threat_counts || {});
+      renderSuspiciousIps(data.security.suspicious_ips || []);
+      renderAttackDetections(data.security.brute_force_attacks || []);
+
+      const count = document.getElementById('security-alert-count');
+      if (count) {
+        count.textContent = String((data.security.alerts || []).length);
+      }
+    }
+
+    if (data.line && !monitoringStarted) {
+      appendStreamLine(data.line);
+    }
+    if (data.preview_lines && data.preview_lines.length && !monitoringStarted) {
+      renderStreamPreview(data.preview_lines);
+    }
+
+    document.getElementById('last-update').textContent = new Date().toLocaleString();
+    if (appendLineInput) appendLineInput.value = '';
+    setAppendLineStatus('New line added to the uploaded log.');
+  } catch (err) {
+    setAppendLineStatus(err.message || 'Failed to append line.', true);
+  }
+}
+
+if (appendLineBtn) {
+  appendLineBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openAppendLinePanel();
+  });
+}
+
+if (previewLineBtn) {
+  previewLineBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openAppendLinePanel();
+    setAppendLineStatus('Preview the line, then append it to the uploaded log.');
+  });
+}
+
+if (closeAppendPanelBtn) {
+  closeAppendPanelBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    showAppendLinePanel(false);
+  });
+}
+
+if (saveLineBtn) {
+  saveLineBtn.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await appendNewLine();
+  });
+}
+
 if (monitorBtn) {
-  monitorBtn.addEventListener('click', () => {
+  monitorBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+
     if (!lastUploadedFile) {
       setMonitorStatus('Upload a file first, then start monitoring.', true);
       return;
@@ -359,6 +485,10 @@ uploadForm.addEventListener('submit', async (ev) => {
         if (monitorBtn) {
           monitorBtn.disabled = false;
           monitorBtn.textContent = 'Restart Live Monitoring';
+        }
+        if (appendLineBtn) {
+          appendLineBtn.disabled = false;
+          appendLineBtn.classList.remove('d-none');
         }
         startMonitoring(lastUploadedFile);
       }
