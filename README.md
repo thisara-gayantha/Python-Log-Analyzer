@@ -51,29 +51,17 @@ The project follows a modular architecture to ensure scalability, maintainabilit
 
 
 log-analyser/
-
 ├── app.py
-
 ├── analyzer/
-
 │ ├── parser.py
-
 │ ├── stats.py
-
 │ ├── monitor.py
-
 │ └── security.py
-
 ├── templates/
-
 │ └── index.html
-
 ├── static/
-
 ├── uploads/
-
 ├── reports/
-
 └── requirements.txt
 
 
